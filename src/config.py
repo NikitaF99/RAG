@@ -1,0 +1,7 @@
+SCRAP = "../data/mitre_docs.json"
+BASE_URL = "https://attack.mitre.org"
+EMBEDDINGS_PATH = "../data/embeddings.pkl"
+CHUNKS_PATH = "../data/chunks.json"
+FAISS_PATH = "../data/processed/mitre_index.faiss"
+BM25_PATH = "../data/processed/bm25.pkl"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
