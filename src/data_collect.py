@@ -3,75 +3,188 @@ from bs4 import BeautifulSoup
 import time
 import json
 from config import *
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from datasets import load_dataset
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
+
+session = requests.Session()
+retries = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504]
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
+
+def clean_text(text):
+    if not text:
+        return ""
+
+    return " ".join(text.split())
+
+
+def safe_get(url):
+    try:
+        r = session.get(url, headers=HEADERS, timeout=20)
+
+        if r.status_code == 200:
+            return r.text
+
+        print(f"[ERROR] Status {r.status_code}: {url}")
+        return None
+
+    except Exception as e:
+        print(f"[ERROR] Request failed: {url}")
+        print(e)
+        return None
 
 def get_all_technique_urls():
     """Get links to all technique pages from the main techniques listing."""
-    r = requests.get(f"{BASE_URL}/techniques/enterprise/", 
-                     headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-    soup = BeautifulSoup(r.text, "html.parser")
+    url = f"{BASE_URL}/techniques/enterprise/"
+    html = safe_get(f"{BASE_URL}/techniques/enterprise/")
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
     
-    urls = []
+    urls = set() 
     for a in soup.select("td a[href^='/techniques/T']"):
         href = a["href"]
-        if href not in urls:
-            urls.append(href)
-    return urls  # returns ~600 technique + sub-technique URLs
+        if href:
+            urls.add(href)
+    return sorted(list(urls))  # returns ~600 technique + sub-technique URLs
 
 def scrape_technique(path):
     """Scrape one technique page and return a text document."""
     url = BASE_URL + path
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-    if r.status_code != 200:
-        return None
-    
-    soup = BeautifulSoup(r.text, "html.parser")
-    
-    # Name and ID
-    name = soup.select_one("h1").get_text(strip=True) if soup.select_one("h1") else ""
-    tid  = path.strip("/").split("/")[-1].replace("/", ".")
+    html = safe_get(url)
+    if not html:
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Basic info
+    title = soup.select_one("h1")
+    technique_name = clean_text(title.get_text()) if title else "Unknown"
+    technique_id = path.strip("/").split("/")[-1]
 
     # Description
     desc_div = soup.select_one(".description-body")
-    description = desc_div.get_text(separator=" ", strip=True) if desc_div else ""
+    description = ""
+    if desc_div:
+        description = clean_text(desc_div.get_text(separator=" ", strip=True))
 
-    # Card fields (Platforms, Permissions, Data Sources etc.)
-    card_text = ""
+    # Card metadata
+    metadata = {} 
     for row in soup.select(".card-data"):
         label = row.select_one(".card-title")
         value = row.select_one(".card-value")  
         if label and value:
-            card_text += f"{label.get_text(strip=True)}: {value.get_text(strip=True)}\n"
+            key = clean_text(label.get_text())
+            val = clean_text(value.get_text())
+
+            metadata[key] = val
 
     # Mitigations section
     mitigations = []
-    for row in soup.select("#mitigations ~ table tr"):
-        cells = [td.get_text(separator=" ", strip=True) for td in row.select("td")]
-        if len(cells) >= 3:
-            mitigations.append(f"{cells[0]} - {cells[1]}: {cells[2]}")
+    mitigation_table = soup.select_one("#mitigations")
+    if mitigation_table:
+        rows = mitigation_table.select("tr")
+        for row in rows:
+            cols = [
+                clean_text(td.get_text(separator=" "))
+                for td in row.find_all("td")
+            ]
+
+            if len(cols) >= 3:
+
+                mitigations.append({
+                    "mitigation_id": cols[0],
+                    "mitigation_name": cols[1],
+                    "description": cols[2]
+                })
 
     # Detection section
-    detection_section = soup.find("h2", string=lambda t: t and "Detection" in t)
-    detection = ""
-    if detection_section:
-        next_p = detection_section.find_next("p")
-        if next_p:
-            detection = next_p.get_text(separator=" ", strip=True)
+    detection_header = soup.find(["h2", "h3"],
+                                 string=lambda t: t and "Detection" in t
+                                )
 
-    # Compose final document
-    text = f"""TECHNIQUE: {name} (ATT&CK ID: {tid})
+    if detection_header:
+        detection_paragraphs = []
+        current = detection_header.find_next_sibling()
+        while current:
+            if current.name in ["h2", "h3"]:
+                break
+            text = clean_text(
+                current.get_text(separator=" ")
+            )
+            if text:
+                detection_paragraphs.append(text)
+            current = current.find_next_sibling()
+        detection = "\n".join(detection_paragraphs)
 
-            DESCRIPTION:
-            {description}
+    docs = []
 
-            {card_text}
-            DETECTION:
-            {detection}
+    common_metadata = {
+        "technique_id": technique_id,
+        "technique_name": technique_name,
+        "source": url
+    }
 
-            MITIGATIONS:
-            {chr(10).join(mitigations) if mitigations else "See ATT&CK page for mitigations."}
-            """
-    return {"technique_id": tid, "name": name, "text": text.strip(), "source": url}
+    # description doc
+    if description:
+        docs.append({
+            **common_metadata,
+            "doc_type": "description",
+            "text": description
+        })
+
+
+    # Detection doc
+    if detection:
+        docs.append({
+            **common_metadata,
+            "doc_type": "detection",
+            "text": detection
+        })
+
+    # Platforms, permissions doc
+    metadata_text = []
+
+    important_fields = [
+        "Platforms",
+        "Permissions Required",
+        "Data Sources",
+        "Defense Bypassed"
+    ]
+
+    for field in important_fields:
+        if field in metadata:
+            metadata_text.append(
+                f"{field}: {metadata[field]}"
+            )
+
+    if metadata_text:
+        docs.append({
+            **common_metadata,
+            "doc_type": "metadata",
+            "text": "\n".join(metadata_text)
+        })
+
+    # Mitigation docs
+    for mitigation in mitigations:
+        docs.append({
+            **common_metadata,
+            "doc_type": "mitigation",
+            "mitigation_id": mitigation["mitigation_id"],
+            "mitigation_name": mitigation["mitigation_name"],
+            "text": mitigation["description"]
+        })
+
+    return docs
 
 
 def webscrape_mitre_techniques():
@@ -81,28 +194,44 @@ def webscrape_mitre_techniques():
 
     docs = []
     for i, path in enumerate(urls):
-        doc = scrape_technique(path)
-        if doc:
-            docs.append(doc)
-        if i % 20 == 0:
-            print(f"  {i}/{len(urls)} done...")
-        time.sleep(0.4)  # be polite
+        try:
+            doc = scrape_technique(path)
+            docs.extend(doc)
+            print(
+                    f"[{i+1}/{len(urls)}] "
+                    f"Collected {len(doc)} docs from {path}"
+                )
+            time.sleep(0.4) 
+        except Exception as e:
+            print(f"Error occurred while scraping {path}: {e}")
+        
 
-    print(f"\nDone! Collected {len(docs)} technique documents")
-
-    # Save
-
-    
+    print(f"\nCollected {len(docs)} technique documents")
     return docs
 
 def load_hf_infosec_qa():
-    hf_ds = load_dataset("pAILabs/infosec-security-qa", split="train")
-    hf_docs = [
-        {"text": f"Q: {row['question']}\nA: {row['answer']}", "source": "pAILabs/infosec-qa"}
-        for row in hf_ds
-    ]
+    
+    dataset = load_dataset("pAILabs/infosec-security-qa",split="train")
 
-    return hf_docs
+    qa_docs = []
+
+    for row in dataset:
+        question = clean_text(row["question"])
+        answer = clean_text(row["answer"])
+
+        if not answer:
+            continue
+
+        qa_docs.append({
+            "doc_type": "qa",
+            "question": question,
+            "text": answer,
+            "source": "pAILabs/infosec-security-qa"
+        })
+
+    print(f"Loaded {len(qa_docs)} QA docs")
+
+    return qa_docs
 
 def build_knowledge_base():
     # Scrape MITRE techniques
@@ -115,7 +244,7 @@ def build_knowledge_base():
     all_docs = mitre_docs + hf_docs
     print(f"Total documents in knowledge base: {len(all_docs)}")
 
-    with open(SCRAP, "a") as f:
+    with open(SCRAP, "w") as f:
         json.dump(all_docs, f, indent=2)
     return all_docs
 
