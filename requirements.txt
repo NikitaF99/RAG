@@ -13,3 +13,4 @@ torch
 pandas
 numpy
 rank-bm25
+streamlit
