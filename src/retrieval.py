@@ -7,12 +7,25 @@ import json
 from rank_bm25 import BM25Okapi
 from chunking import *
 from pathlib import Path
+import re
 
-FAISS_PATH = "../data/processed/faiss_index.pkl"
+
+def cyber_tokenizer(text):
+    """
+    For cybersecurity text like powershell.exe
+    """
+
+    text = text.lower()
+
+    return re.findall(
+        r"[a-zA-Z0-9_\-\.]+",
+        text
+    )
 
 def build_faiss_index(embeddings):
     print("Building FAISS index...")
-
+    
+    embeddings = embeddings.astype("float32")
     faiss.normalize_L2(embeddings)
 
     # Create the index
@@ -24,16 +37,15 @@ def build_faiss_index(embeddings):
 
     print(f"Index built — {index.ntotal} vectors stored")
 
-    with open(FAISS_PATH, "wb") as f:
-        pickle.dump(index, f)
-    print(f"Saved → {FAISS_PATH}")
+    faiss.write_index(index, FAISS_PATH)
+
+    print(f"Saved - {FAISS_PATH}")
 
     return index
 
 
 def load_faiss_index():
-    with open(FAISS_PATH, "rb") as f:
-        index = pickle.load(f)
+    index = faiss.read_index(FAISS_PATH)
     print(f"Loaded FAISS index with {index.ntotal} vectors")
     return index
 
@@ -51,11 +63,15 @@ def retrieve(query, index, all_chunks, embedder, top_k=3):
 
     results = []
     for score, idx in zip(scores[0], indices[0]):
+        chunk = all_chunks[idx]
+
         results.append({
-            "text":   all_chunks[idx]["text"],
-            "source": all_chunks[idx]["source"],
-            "name":   all_chunks[idx]["name"],
-            "score":  round(float(score), 4)
+            "text": chunk["text"],
+            "source": chunk.get("source",""),
+            "name": chunk.get("technique_name",""),
+            "doc_type": chunk.get("doc_type",""),
+            "technique_id": chunk.get("technique_id",""),
+            "score": round(float(score),4)
         })
 
     return results
@@ -67,12 +83,13 @@ def build_bm25_index(all_chunks):
     print("Building BM25 index...")
 
     # BM25 works on tokenised text (list of words per chunk)
-    tokenised = [chunk["text"].lower().split() for chunk in all_chunks]
+    tokenised = [cyber_tokenizer(chunk["text"]) for chunk in all_chunks]    
+    
     bm25      = BM25Okapi(tokenised)
 
     with open(BM25_PATH, "wb") as f:
         pickle.dump(bm25, f)
-    print(f"Saved → {BM25_PATH}")
+    print(f"Saved - {BM25_PATH}")
     return bm25
 
 
@@ -82,20 +99,35 @@ def load_bm25_index():
     print("Loaded BM25 index")
     return bm25
 
-
+# DENSE RETRIEVAL
 def retrieve_dense(query, index, all_chunks, embedder, top_k=3):
     """Pure dense retrieval using FAISS — from previous step."""
-    query_emb = embedder.encode([query]).astype("float32")
-    faiss.normalize_L2(query_emb)
+    query_emb = embedder.encode([query], normalize_embeddings=True).astype("float32")
     scores, indices = index.search(query_emb, top_k)
     results = []
+    seen = set()
     for score, idx in zip(scores[0], indices[0]):
+        chunk = all_chunks[idx]
+        # deduplicate overlapping chunks
+        dedup_key = (
+            chunk.get("technique_id", ""),
+            chunk.get("doc_type", "")
+        )
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
         results.append({
-            "text":   all_chunks[idx]["text"],
-            "source": all_chunks[idx]["source"],
-            "name":   all_chunks[idx]["name"],
-            "score":  round(float(score), 4)
+            "text": chunk["text"],
+            "source": chunk.get("source",""),
+            "name": chunk.get("technique_name",""),
+            "doc_type": chunk.get("doc_type",""),
+            "technique_id": chunk.get("technique_id",""),
+            "score": round(float(score),4)
         })
+
+        if len(results) >= top_k:
+            break
+
     return results
 
 
@@ -106,16 +138,14 @@ def retrieve_hybrid(query, index, all_chunks, embedder, bm25, top_k=3, alpha=0.5
     alpha: weight balance between the two
         1.0 = pure dense
         0.0 = pure BM25
-        0.5 = equal mix (default)
     """
 
-    query_emb = embedder.encode([query]).astype("float32")
-    faiss.normalize_L2(query_emb)
-    # Get more candidates than top_k so we have room to re-rank
-    dense_scores, dense_indices = index.search(query_emb, top_k * 10)
+    query_emb = embedder.encode([query], normalize_embeddings=True).astype("float32")
 
+    dense_scores, dense_indices = index.search(query_emb,top_k * 10)
 
-    tokenised_query = query.lower().split()
+# BM25 search
+    tokenised_query = cyber_tokenizer(query)
     bm25_scores     = bm25.get_scores(tokenised_query)  # score for every chunk
 
     # Normalise
@@ -134,18 +164,42 @@ def retrieve_hybrid(query, index, all_chunks, embedder, bm25, top_k=3, alpha=0.5
 
 
     combined = alpha * dense_norm + (1 - alpha) * bm25_norm
-    top_indices = np.argsort(combined)[::-1][:top_k]
+    top_indices = np.argsort(combined)[::-1]
 
     results = []
+
+    seen = set()
+
     for idx in top_indices:
+
+        chunk = all_chunks[idx]
+
+        # CHANGED:
+        # dedup overlapping chunks
+        dedup_key = (
+            chunk.get("technique_id", ""),
+            chunk.get("doc_type", "")
+        )
+
+        if dedup_key in seen:
+            continue
+
+        seen.add(dedup_key)
+
         results.append({
-            "text":        all_chunks[idx]["text"],
-            "source":      all_chunks[idx]["source"],
-            "name":        all_chunks[idx]["name"],
-            "score":       round(float(combined[idx]), 4),
-            "dense_score": round(float(dense_norm[idx]), 4),
-            "bm25_score":  round(float(bm25_norm[idx]), 4)
+            "text": chunk["text"],
+            "source": chunk.get("source",""),
+            "name": chunk.get("technique_name",""),
+            "doc_type": chunk.get("doc_type",""),
+            "technique_id": chunk.get("technique_id",""),
+            "score": round(float(combined[idx]),4),
+            "dense_score": round(float(dense_norm[idx]),4),
+            "bm25_score": round(float(bm25_norm[idx]),4)
         })
+
+        if len(results) >= top_k:
+            break
+
     return results
 
 
@@ -166,9 +220,11 @@ if __name__ == "__main__":
         index       = build_faiss_index(embeddings)
 
     embedder               = SentenceTransformer(EMBEDDING_MODEL)
-    bm25                   = build_bm25_index(all_chunks)  
+    if Path(BM25_PATH).exists():
+        bm25 = load_bm25_index()
+    else:
+        bm25 = build_bm25_index(all_chunks)
 
-   
     queries = [
         "How can we detect phishing attacks?",  # semantic query 
         "T1566.001 spearphishing",               # exact ID query 
@@ -178,12 +234,12 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print(f"QUERY: {query}")
 
-        print("\n--- DENSE RESULTS ---")
+        print("\nDENSE RESULTS")
         dense_results = retrieve_dense(query, index, all_chunks, embedder)
         for i, r in enumerate(dense_results, 1):
             print(f"  {i}. (score: {r['score']}) {r['name']} — {r['text'][:120]}...")
 
-        print("\n--- HYBRID RESULTS ---")
+        print("\n HYBRID RESULTS ")
         hybrid_results = retrieve_hybrid(query, index, all_chunks, embedder, bm25)
         for i, r in enumerate(hybrid_results, 1):
             print(f"  {i}. (combined: {r['score']} | dense: {r['dense_score']} | bm25: {r['bm25_score']})")
