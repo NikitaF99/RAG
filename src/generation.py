@@ -2,60 +2,90 @@ import os
 from transformers import pipeline
 from retrieval import *
 from chunking import *
+from config import *
 
 
-LLM_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
-HF_CACHE = "/Volumes/NikitaPen/huggingface"
 
 def load_llm():
     print(f"Loading LLM: {LLM_MODEL}")
-    print("This may take a few minutes on first run...")
     llm = pipeline(
         "text-generation",
         model=LLM_MODEL,
-        device_map="auto",       # uses GPU if available, else CPU
+        device_map="auto",      
         torch_dtype="auto"
     )
     print("LLM loaded.")
     return llm
 
 
-def build_prompt(query, retrieved_chunks):
-    """
-    Builds the RAG prompt — context + query combined.
-    """
-    # Join the 3 chunks into one context block
-    context = "\n\n---\n\n".join([
-        f"Source: {c['source']}\n{c['text']}"
-        for c in retrieved_chunks
-    ])
+def build_prompt(query, retrieved_chunks, mode="production"):
 
-    prompt = f"""[INST] You are a cybersecurity advisor helping security practitioners.
-Use ONLY the context provided below to answer the question.
-Do not add any information that is not in the context.
+    context_blocks = []
+    prompt = ""
+    for i, c in enumerate(retrieved_chunks, 1):
 
-CONTEXT:
-{context}
+        block = f"""
+        [Source {i}]
+        Type: {c.get('doc_type', 'unknown')}
+        Technique: {c.get('technique_id', '')} {c.get('name', '')}
+        Content:
+        {c['text']}
+        """
+        context_blocks.append(block)
+    context = "\n\n---\n\n".join(context_blocks)
 
-QUESTION:
-{query}
+    if mode == "production":
+        prompt = f"""[INST]
+        You are a cybersecurity assistant.
 
-Provide exactly 3 concise, actionable security guidelines based on the context above.
-Format your response as a numbered list. [/INST]"""
+        Use ONLY the provided context.
 
+        Do NOT add extra formatting or labels like "Explanation:" or "Detection Guidance:".
+
+        Answer in a natural, technical paragraph style.
+
+        If relevant, include:
+        - detection ideas
+        - mitigation ideas
+
+        Use inline citations like [Source 1], [Source 2].
+
+        CONTEXT:
+        {context}
+
+        QUESTION:
+        {query}
+        [/INST]"""
+    elif mode == "eval":
+
+        prompt = f"""[INST]
+    You are a cybersecurity expert.
+
+    Use ONLY the provided context.
+
+    Answer the question in a clear, concise paragraph.
+
+    Do NOT use headings, sections, or bullet formatting.
+
+    CONTEXT:
+    {context}
+
+    QUESTION:
+    {query}
+    [/INST]"""
     return prompt
 
 
-def generate(query, retrieved_chunks, llm):
+def generate(query, retrieved_chunks, llm, mode="production"):
     """
     Full RAG generation — takes a query + retrieved chunks,
     returns the generated guidelines.
     """
-    prompt = build_prompt(query, retrieved_chunks)
+    prompt = build_prompt(query, retrieved_chunks, mode=mode)
 
     output = llm(
         prompt,
-        max_new_tokens=400,
+        max_new_tokens=500,
         do_sample=False,       
         repetition_penalty=1.1 # avoids the model repeating itself
     )
@@ -86,7 +116,12 @@ if __name__ == "__main__":
     print(f"\nQUERY:\n{query}")
     print(f"\nRETRIEVED CHUNKS:")
     for i, c in enumerate(chunks, 1):
-        print(f"  {i}. {c['name']} (score: {c['score']})")
-        print(f"     {c['text'][:150]}...")
+
+        print(f"\n{i}. [{c.get('doc_type')}] {c.get('name')}")
+
+        print(f"Score: {c['score']}")
+
+        print(f"{c['text'][:150]}...")
+
 
     print(f"\nGENERATED ANSWER:\n{answer}")
