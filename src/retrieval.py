@@ -226,8 +226,8 @@ if __name__ == "__main__":
         bm25 = build_bm25_index(all_chunks)
 
     queries = [
-        "How can we detect phishing attacks?",  # semantic query 
-        "T1566.001 spearphishing",               # exact ID query 
+        "What are the characteristics of PHaaS platforms used by threat actors",
+        "How can Thread Execution Hijacking (T1055.003) be detected?",               # exact ID query 
     ]
 
     for query in queries:
@@ -237,10 +237,10 @@ if __name__ == "__main__":
         print("\nDENSE RESULTS")
         dense_results = retrieve_dense(query, index, all_chunks, embedder)
         for i, r in enumerate(dense_results, 1):
-            print(f"  {i}. (score: {r['score']}) {r['name']} — {r['text'][:120]}...")
+            print(f"  {i}. (score: {r['score']}) {r['name']} — {r['text']}...")
 
         print("\n HYBRID RESULTS ")
         hybrid_results = retrieve_hybrid(query, index, all_chunks, embedder, bm25)
         for i, r in enumerate(hybrid_results, 1):
             print(f"  {i}. (combined: {r['score']} | dense: {r['dense_score']} | bm25: {r['bm25_score']})")
-            print(f"      {r['name']} — {r['text'][:120]}...")
+            print(f"      {r['name']} — {r['text']}...")
