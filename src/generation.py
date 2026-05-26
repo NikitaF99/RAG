@@ -3,7 +3,7 @@ from transformers import pipeline
 from retrieval import *
 from chunking import *
 from config import *
-
+from reranker import *
 
 
 def load_llm():
@@ -17,71 +17,59 @@ def load_llm():
     print("LLM loaded.")
     return llm
 
-
-def build_prompt(query, retrieved_chunks, mode="production"):
+# Prompt engineering
+def build_prompt(query, retrieved_chunks):
 
     context_blocks = []
-    prompt = ""
     for i, c in enumerate(retrieved_chunks, 1):
 
         block = f"""
-        [Source {i}]
-        Type: {c.get('doc_type', 'unknown')}
-        Technique: {c.get('technique_id', '')} {c.get('name', '')}
-        Content:
-        {c['text']}
-        """
+            [Source {i}]
+            Type: {c.get('doc_type', 'unknown')}
+            Technique: {c.get('technique_id', '')} {c.get('name', '')}
+            Content:
+            {c['text']}
+            """
         context_blocks.append(block)
     context = "\n\n---\n\n".join(context_blocks)
 
-    if mode == "production":
-        prompt = f"""[INST]
-        You are a cybersecurity assistant.
+    prompt = f"""
+        You are a professional cybersecurity assistant.
 
         Use ONLY the provided context.
 
-        Do NOT add extra formatting or labels like "Explanation:" or "Detection Guidance:".
+        If the context is insufficient, say:
+        "I could not find sufficient information."
 
-        Answer in a natural, technical paragraph style.
+        Answer in a clear, concise paragraph. No bullets or numbering
 
-        If relevant, include:
-        - detection ideas
-        - mitigation ideas
+        Requirements:
+                - concise
+                - actionable
+                - cybersecurity-focused
+                - professional
+                - no hallucinations
+                - cite sources whether MITRE or QA when relevant
 
-        Use inline citations like [Source 1], [Source 2].
 
         CONTEXT:
         {context}
 
         QUESTION:
         {query}
-        [/INST]"""
-    elif mode == "eval":
 
-        prompt = f"""[INST]
-    You are a cybersecurity expert.
+        ANSWER:
+        """
 
-    Use ONLY the provided context.
-
-    Answer the question in a clear, concise paragraph.
-
-    Do NOT use headings, sections, or bullet formatting.
-
-    CONTEXT:
-    {context}
-
-    QUESTION:
-    {query}
-    [/INST]"""
     return prompt
 
 
-def generate(query, retrieved_chunks, llm, mode="production"):
+def generate(query, retrieved_chunks, llm):
     """
     Full RAG generation — takes a query + retrieved chunks,
     returns the generated guidelines.
     """
-    prompt = build_prompt(query, retrieved_chunks, mode=mode)
+    prompt = build_prompt(query, retrieved_chunks)
 
     output = llm(
         prompt,
@@ -107,12 +95,17 @@ if __name__ == "__main__":
     query   = "How should we handle spear-phishing attempts in a mid-sized enterprise?"
 
     # Step 1 — retrieve
-    chunks  = retrieve_hybrid(query, index, all_chunks, embedder, bm25, top_k=3)
-
-    # Step 2 — generate
+    chunks  = retrieve_hybrid(query, index, all_chunks, embedder, bm25, top_k=10)
+    # Step 2 - reranking step
+    chunks = rerank(
+        query,
+        chunks,
+        top_k=3
+    )
+    # Step 3 — generate
     answer  = generate(query, chunks, llm)
 
-    # Step 3 — print everything
+    # Step 4 — print everything
     print(f"\nQUERY:\n{query}")
     print(f"\nRETRIEVED CHUNKS:")
     for i, c in enumerate(chunks, 1):
