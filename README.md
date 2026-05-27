@@ -57,6 +57,7 @@ RAG/
 │   ├── generation.py
 │   ├── evaluation.py
 │   ├── config.py
+│   ├── data_collect.py
 │   └── app.py
 │
 ├── requirements.txt
