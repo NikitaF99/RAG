@@ -1,5 +1,13 @@
-import uuid
+# This module prepares the knowledge base for retrieval in
+# the RAG pipeline.
+# 1. Cleans and preprocesses raw document text.
+# 2. Splits documents into smaller overlapping chunks using a sliding window chunking strategy.
+# 3. Attaches metadata to every chunk including:
+# 4. Generates dense vector embeddings using a SentenceTransformer model.
+# 5. Normalizes embeddings for cosine similarity search.
+# 6. Saves:
 
+import uuid
 import requests
 import time
 import json

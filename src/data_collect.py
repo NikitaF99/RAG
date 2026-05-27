@@ -1,3 +1,12 @@
+
+# This module builds the cybersecurity knowledge base used
+# in the RAG pipeline.
+# 1. Web scrapes MITRE ATT&CK Enterprise techniques
+# 2. Loads additional cybersecurity QA data from the pAILabs/infosec-security-qa
+# 3. Cleans and structures all collected data into
+# 4. Combines all documents into a single unified
+# 5. Saves the processed knowledge base as JSON
+
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -55,7 +64,7 @@ def get_all_technique_urls():
         href = a["href"]
         if href:
             urls.add(href)
-    return sorted(list(urls))  # returns ~600 technique + sub-technique URLs
+    return sorted(list(urls))  # returns 600 technique + sub-technique URLs
 
 def scrape_technique(path):
     """Scrape one technique page and return a text document."""
@@ -179,8 +188,6 @@ def scrape_technique(path):
         docs.append({
             **common_metadata,
             "doc_type": "mitigation",
-            "mitigation_id": mitigation["mitigation_id"],
-            "mitigation_name": mitigation["mitigation_name"],
             "text": mitigation["description"]
         })
 
