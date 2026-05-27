@@ -1,3 +1,10 @@
+# This module implements the generation component of the RAG pipeline.
+# 1. Loads the fine-tuned LLM using HuggingFace Transformers.
+# 2.Retrieves relevant chunks from the knowledge base using the retrieval module.
+#  3. Reranks retrieved chunks using a cross-encoder for better relevance.
+# 4. Builds a prompt template that incorporates retrieved chunks as context.
+# 5. Generates an answer using the LLM based on the prompt.
+
 import os
 from transformers import pipeline
 from retrieval import *
