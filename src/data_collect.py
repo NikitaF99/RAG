@@ -188,6 +188,8 @@ def scrape_technique(path):
         docs.append({
             **common_metadata,
             "doc_type": "mitigation",
+            "mitigation_id": mitigation["mitigation_id"],
+            "mitigation_name": mitigation["mitigation_name"],
             "text": mitigation["description"]
         })
 
