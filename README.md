@@ -77,7 +77,7 @@ RAG/
 - FAISS
 - BM25
 - RAGAS
-- Streamlit
+- Streamlit (still testing)
 
 ## Models
 
@@ -156,7 +156,8 @@ How is Process Discovery detected
 Example output:
 
 ```text
-Organisations should implement multi-factor authentication, email filtering, employee awareness training, and endpoint monitoring to reduce the risk of spear-phishing attacks. Detection mechanisms such as suspicious login monitoring and phishing simulation exercises can further improve organisational resilience. [Source 1]
+Process Discovery, also known as Technique T1057, is primarily detected through the
+identification of adversarial behaviors related to process ...
 ```
 
 ---
